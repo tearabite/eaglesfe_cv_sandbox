@@ -42,11 +42,12 @@ class CVPipeline:
 
     @staticmethod
     def get_mask_for_color(img, ranges, iterations):
+        kernel_size = 3
         result_mask = None
         for pair in ranges:
             mask = cv2.inRange(img, pair[0], pair[1])
-            mask = cv2.erode(mask, cv2.getStructuringElement(cv2.MORPH_CROSS, (5, 5), (2,2)), iterations=iterations)
-            mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_CROSS, (5, 5), (2,2)), iterations=iterations)
+            mask = cv2.erode(mask, cv2.getStructuringElement(cv2.MORPH_CROSS, (kernel_size, kernel_size), (int(kernel_size/2), int(kernel_size/2))), iterations=iterations)
+            mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_CROSS, (kernel_size, kernel_size), (int(kernel_size/2), int(kernel_size/2))), iterations=iterations)
             result_mask = mask if result_mask is None else cv2.add(result_mask, mask)
 
         return result_mask
@@ -98,7 +99,7 @@ class CVPipeline:
     def loop(self):
         use_still_image = False
         if not use_still_image:
-            vid = cv2.VideoCapture(0)
+            vid = cv2.VideoCapture('/Users/scott/Developer/eaglesfe_cv_sandbox/IMG_1189.mov')
 
         cv2.namedWindow(self.wnd, cv2.WINDOW_NORMAL)
 
@@ -114,6 +115,10 @@ class CVPipeline:
                 frame = cv2.imread("./red_goal2.jpg")
             else:
                 ret, frame = vid.read()
+
+            if frame is None:
+                vid = cv2.VideoCapture('/Users/scott/Developer/eaglesfe_cv_sandbox/IMG_1189.mov')
+                continue
 
             frame = self.process_frame(frame)
 
@@ -202,15 +207,36 @@ class CVPipeline:
         cv2.bitwise_and(ignore_mask, combined_mask, combined_mask)
 
         # Detect contours
-        contours = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = cv2.findContours(combined_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
         contours = imutils.grab_contours(contours)
+
+        hulls = np.zeros(combined_mask.shape, np.uint8)
+        for cnt in contours:
+            hull = cv2.convexHull(cnt)
+            cv2.drawContours(hulls, [hull], 0, (255, 255, 255), -1)
+
+        contours = cv2.findContours(hulls, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        contours = imutils.grab_contours(contours)
+
+        def foo(contour):
+            x, y, w, h = cv2.boundingRect(contour)
+            area = cv2.contourArea(contour)
+            rect_area = w*h
+            if (area < dim[0] * dim[1] * 0.05):
+                return -100
+            if h == 0:
+                return -100
+
+            return float(area)/rect_area - abs(1.5 - w/h)
 
         goal_contour = None
         if len(contours) > 0:
-            goal_contour = max(contours, key=cv2.contourArea)
+            goal_contour = max(contours, key=foo)
 
-        if goal_contour is not None:
+        if goal_contour is not None and cv2.contourArea(goal_contour) > 0.05 * dim[0] * dim[1] and CVPipeline.is_entirely_in_frame(frame, goal_contour):
             goal_center = CVPipeline.get_contour_center(goal_contour)
+            if goal_center is None:
+                return frame
             if goal_center[1] > frame.shape[1] / 2:
                 return frame
 
@@ -304,6 +330,19 @@ class CVPipeline:
 
             cv2.rectangle(frame, (0, dim[1] - 25), (dim[0], dim[1]), goal_color, -1)
         return goal_center
+
+    @staticmethod
+    def is_entirely_in_frame(frame, cnt):
+        leftmost = tuple(cnt[cnt[:, :, 0].argmin()][0])
+        rightmost = tuple(cnt[cnt[:, :, 0].argmax()][0])
+        topmost = tuple(cnt[cnt[:, :, 1].argmin()][0])
+        bottommost = tuple(cnt[cnt[:, :, 1].argmax()][0])
+
+        margin = 0.00
+        vm = int(frame.shape[0] * margin)
+        hm = int(frame.shape[1] * margin)
+        return leftmost[0] > hm and rightmost[0] < frame.shape[1] - hm and topmost[1] > vm and bottommost[1] < frame.shape[0] - vm
+
 
     @staticmethod
     def get_mean_color(frame, contour):

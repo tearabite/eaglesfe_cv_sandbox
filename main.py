@@ -57,39 +57,13 @@ class CVPipeline:
 
     def create_trackbars(self):
         cv2.namedWindow(self.wnd, cv2.WINDOW_NORMAL)
-        cv2.createTrackbar("Red Threshold", self.wnd, 0, 180, nothing)
-        cv2.createTrackbar("Red Threshold Window", self.wnd, 20, 60, nothing)
 
         cv2.createTrackbar("Blur", self.wnd, self.blur, 100, nothing)
         cv2.createTrackbar("Iterations", self.wnd, self.iterations, 10, nothing)
         cv2.createTrackbar("Scale", self.wnd, self.scale, 200, nothing)
-        cv2.createTrackbar("Visualization", self.wnd, self.visualization, 5, nothing)
         cv2.createTrackbar("Steps", self.wnd, self.steps, 4, nothing)
-        cv2.createTrackbar("Zoom", self.wnd, self.zoom, 4, nothing)
-        cv2.createTrackbar("Edge Lower", self.wnd, self.edge_lower, 255, nothing)
-        cv2.createTrackbar("Edge Upper", self.wnd, self.edge_upper, 255, nothing)
 
     def update_trackbar_values(self):
-        r_thresh = cv2.getTrackbarPos("Red Threshold", self.wnd)
-        r_window = cv2.getTrackbarPos("Red Threshold Window", self.wnd)
-        lower = r_thresh - r_window / 2
-        lower_safe = max(0, lower)
-        upper = r_thresh + r_window / 2
-        upper_safe = min(180, upper)
-
-        self.red_lower_1 = (int(lower_safe), self.red_lower_1[1], self.red_lower_1[2])
-        self.red_upper_1 = (int(upper_safe), self.red_upper_1[1], self.red_upper_1[2])
-
-        if lower < 0:
-            lower = 180 + lower
-            upper = 180
-        elif upper > 180:
-            upper = upper - 180
-            lower = 0
-
-        self.red_lower_2 = (int(lower), self.red_lower_2[1], self.red_lower_2[2])
-        self.red_upper_2 = (int(upper), self.red_upper_2[1], self.red_upper_2[2])
-
         blur = cv2.getTrackbarPos("Blur", self.wnd)
         if blur % 2 == 0:
             self.blur = (blur + 1, blur + 1)
@@ -97,11 +71,7 @@ class CVPipeline:
             self.blur = (blur, blur)
         self.iterations = max(1, cv2.getTrackbarPos("Iterations", self.wnd))
         self.scale = max(0.05, cv2.getTrackbarPos("Scale", self.wnd))
-        self.visualization = cv2.getTrackbarPos("Visualization", self.wnd)
         self.steps = max(0, cv2.getTrackbarPos("Steps", self.wnd))
-        self.zoom = cv2.getTrackbarPos("Zoom", self.wnd) / 10
-        self.edge_lower = cv2.getTrackbarPos("Edge Lower", self.wnd)
-        self.edge_upper = cv2.getTrackbarPos("Edge Upper", self.wnd)
 
     def loop(self):
         use_still_image = False
@@ -235,19 +205,15 @@ class CVPipeline:
         goal_contour = None
         if len(contours) > 0:
             goal_contour = max(contours, key=lambda x: CVPipeline.get_goal_confidence(x, frame))
-            if(CVPipeline.get_goal_confidence(goal_contour, frame) < 65):
-                return frame
 
-        if goal_contour is not None:
+        if goal_contour is not None and CVPipeline.get_goal_confidence(goal_contour, frame) >= 65:
             goal_center = CVPipeline.get_contour_center(goal_contour)
-            print(goal_center)
-            if goal_center is None:
-                return frame
-
-            self.draw_goal(frame, goal_contour)
-            self.draw_powershot(frame, self.get_powershot_contours(hsv, goal_contour))
-        else:
-            print("oops!")
+            if goal_center is not None:
+                self.goal_contour = goal_contour
+                self.draw_goal(frame, goal_contour)
+                self.draw_powershot(frame, self.get_powershot_contours(hsv, goal_contour))
+        elif self.goal_contour is not None:
+            self.draw_goal(frame, self.goal_contour)
 
         # Combine multiple Mats (the various steps)
         result_frame = [frame, self.ps_mask, cv2.cvtColor(white_mask, cv2.COLOR_GRAY2BGR), white_mask, hsv][self.steps]

@@ -20,6 +20,9 @@ class CVPipeline:
     blue_lower = (75, 40, 80)
     blue_upper = (120, 255, 255)
 
+    edge_lower = 0
+    edge_upper = 1
+
     text_color = (255, 255, 255)  # White
     vis_color = (0, 255, 0)  # Green
     contrails_color = (255, 0, 0)  # Blue
@@ -63,6 +66,8 @@ class CVPipeline:
         cv2.createTrackbar("Visualization", self.wnd, self.visualization, 5, nothing)
         cv2.createTrackbar("Steps", self.wnd, self.steps, 4, nothing)
         cv2.createTrackbar("Zoom", self.wnd, self.zoom, 4, nothing)
+        cv2.createTrackbar("Edge Lower", self.wnd, self.edge_lower, 255, nothing)
+        cv2.createTrackbar("Edge Upper", self.wnd, self.edge_upper, 255, nothing)
 
     def update_trackbar_values(self):
         r_thresh = cv2.getTrackbarPos("Red Threshold", self.wnd)
@@ -95,6 +100,8 @@ class CVPipeline:
         self.visualization = cv2.getTrackbarPos("Visualization", self.wnd)
         self.steps = max(0, cv2.getTrackbarPos("Steps", self.wnd))
         self.zoom = cv2.getTrackbarPos("Zoom", self.wnd) / 10
+        self.edge_lower = cv2.getTrackbarPos("Edge Lower", self.wnd)
+        self.edge_upper = cv2.getTrackbarPos("Edge Upper", self.wnd)
 
     def loop(self):
         use_still_image = False
@@ -197,62 +204,53 @@ class CVPipeline:
 
         # Convert to HSV
         hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # Create masks
-        red_mask = self.get_mask_for_color(hsv, [(self.red_lower_1, self.red_upper_1), (self.red_lower_2, self.red_upper_2)], self.iterations)
-        blue_mask = self.get_mask_for_color(hsv, [(self.blue_lower, self.blue_upper)], self.iterations)
-        combined_mask = cv2.add(red_mask, blue_mask)
-        ignore_mask = np.zeros(combined_mask.shape, np.uint8)
-        cv2.rectangle(ignore_mask, (0, 0), (dim[0], int(dim[1] / 2)), (255, 255, 255), -1)
-        cv2.bitwise_and(ignore_mask, red_mask, red_mask)
-        cv2.bitwise_and(ignore_mask, blue_mask, blue_mask)
+        white_lower = (0, 0, 180)
+        white_upper = (180, 30, 255)
+        # red_mask = self.get_mask_for_color(hsv, [(self.red_lower_1, self.red_upper_1), (self.red_lower_2, self.red_upper_2), (white_lower, white_upper)], self.iterations)
+        # blue_mask = self.get_mask_for_color(hsv, [(self.blue_lower, self.blue_upper), (white_lower, white_upper)], self.iterations)
+        # combined_mask = cv2.add(red_mask, blue_mask)
+        # edge = cv2.Canny(gray, self.edge_lower, self.edge_upper)
+        # cv2.subtract(edge, combined_mask, combined_mask)
+        white_mask = self.get_mask_for_color(hsv, [(white_lower, white_upper)], self.iterations)
+        # ignore_mask = np.zeros(combined_mask.shape, np.uint8)
+        # cv2.rectangle(ignore_mask, (0, 0), (dim[0], int(dim[1] / 2)), (255, 255, 255), -1)
+        # cv2.bitwise_and(ignore_mask, red_mask, red_mask)
+        # cv2.bitwise_and(ignore_mask, blue_mask, blue_mask)
 
         # Detect contours
-        hulls = np.zeros(red_mask.shape, np.uint8)
 
-        for mask in [red_mask, blue_mask]:
-            contours = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-            contours = imutils.grab_contours(contours)
+        contours = cv2.findContours(white_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        contours = imutils.grab_contours(contours)
 
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
-                if area < dim[0] * dim[1] * 0.01:
-                    continue
-                hull = cv2.convexHull(cnt)
-                cv2.drawContours(hulls, [hull], 0, (255, 255, 255), -1)
+        for cnt in contours:
+            hull = cv2.convexHull(cnt)
+            cv2.drawContours(white_mask, [hull], 0, (255, 255, 255), -1)
 
-            contours = cv2.findContours(hulls, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-            contours = imutils.grab_contours(contours)
+        contours = cv2.findContours(white_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        contours = imutils.grab_contours(contours)
 
-            def foo(contour):
-                x, y, w, h = cv2.boundingRect(contour)
-                area = cv2.contourArea(contour)
-                rect_area = w*h
-                if (area < dim[0] * dim[1] * 0.01):
-                    return -1000
-                if h > w:
-                    return -1000
-                if h == 0:
-                    return -1000
+        goal_contour = None
+        if len(contours) > 0:
+            goal_contour = max(contours, key=lambda x: CVPipeline.get_goal_confidence(x, frame))
+            if(CVPipeline.get_goal_confidence(goal_contour, frame) < 65):
+                return frame
 
-                return float(area)/rect_area - abs(1.5 - w/h)
+        if goal_contour is not None:
+            goal_center = CVPipeline.get_contour_center(goal_contour)
+            print(goal_center)
+            if goal_center is None:
+                return frame
 
-            goal_contour = None
-            if len(contours) > 0:
-                goal_contour = max(contours, key=foo)
-
-            if goal_contour is not None and cv2.contourArea(goal_contour) > 0.01 * dim[0] * dim[1]:
-                goal_center = CVPipeline.get_contour_center(goal_contour)
-                if goal_center is None:
-                    return frame
-                if goal_center[1] > frame.shape[1] / 2:
-                    return frame
-
-                self.draw_goal(frame, goal_contour)
-                self.draw_powershot(frame, self.get_powershot_contours(hsv, goal_contour))
+            self.draw_goal(frame, goal_contour)
+            self.draw_powershot(frame, self.get_powershot_contours(hsv, goal_contour))
+        else:
+            print("oops!")
 
         # Combine multiple Mats (the various steps)
-        result_frame = [frame, self.ps_mask, cv2.cvtColor(combined_mask, cv2.COLOR_GRAY2BGR), hulls, hsv][self.steps]
+        result_frame = [frame, self.ps_mask, cv2.cvtColor(white_mask, cv2.COLOR_GRAY2BGR), white_mask, hsv][self.steps]
 
         # Frame rate
         cv2.putText(result_frame, "FPS: {fps}".format(fps=self.fps), (25, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.text_color, 2, cv2.LINE_AA)
@@ -279,65 +277,110 @@ class CVPipeline:
         goal_center = CVPipeline.get_contour_center(goal_contour)
         goal_area = cv2.contourArea(goal_contour)
         goal_color = CVPipeline.get_mean_color(frame, goal_contour)
-        if goal_area > 500 * (self.scale / 100):
-            if self.visualization == 0:
-                name = "Raw Contour"
-                cv2.drawContours(frame, [np.int0(goal_contour)], 0, self.vis_color, 2)
-            elif self.visualization == 1:
-                name = "Approximation"
-                epsilon = cv2.arcLength(goal_contour, True) * 0.02
-                approx = cv2.approxPolyDP(goal_contour, epsilon, True)
-                if approx.size == 4:
-                    cv2.drawContours(frame, [approx], 0, self.vis_color, 2)
-                    goal_area = cv2.contourArea(approx)
-            elif self.visualization == 2:
-                name = "Convex Hull"
-                hull = cv2.convexHull(goal_contour)
-                cv2.drawContours(frame, [hull], 0, self.vis_color, 2)
-                goal_area = cv2.contourArea(hull)
-            elif self.visualization == 3:
-                name = "Bounding Circle"
-                ((x, y), radius) = cv2.minEnclosingCircle(goal_contour)
-                cv2.circle(frame, (int(x), int(y)), int(radius), self.vis_color, 2)
-                goal_area = math.pi * math.pow(radius, 2)
-            elif self.visualization == 4:
-                name = "Bounding Rectangle"
-                x, y, w, h = cv2.boundingRect(goal_contour)
-                cv2.rectangle(frame, (x, y), (x + w, y + h), self.vis_color, 2)
-                goal_area = w * h
-            elif self.visualization == 5:
-                name = "Rotated Rectangle"
-                rect = cv2.minAreaRect(goal_contour)
-                x, y = rect[0]
-                w, h = rect[1]
-                angle = rect[2]
-                box = cv2.boxPoints(rect)
-                box = np.int0(box)
-                cv2.putText(frame, "{0}deg".format(int(angle * -1)), (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            self.text_color, 2, cv2.LINE_AA)
-                cv2.drawContours(frame, [box], 0, self.vis_color, 2)
-                goal_area = w * h
-
-            # Center Dot
-            moment = cv2.moments(goal_contour)
-            goal_center = (int(moment["m10"] / moment["m00"]), int(moment["m01"] / moment["m00"]))
-            cv2.circle(frame, goal_center, 5, (0, 255, 0), -1)
-
-            # Area Text
-            area_percentage = (goal_area / (dim[0] * dim[1])) * 100
-            cv2.putText(frame, "Area: {:#.1f}%".format(area_percentage), (25, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.50,
+        if self.visualization == 0:
+            name = "Raw Contour"
+            cv2.drawContours(frame, [np.int0(goal_contour)], 0, self.vis_color, 2)
+        elif self.visualization == 1:
+            name = "Approximation"
+            epsilon = cv2.arcLength(goal_contour, True) * 0.02
+            approx = cv2.approxPolyDP(goal_contour, epsilon, True)
+            if approx.size == 4:
+                cv2.drawContours(frame, [approx], 0, self.vis_color, 2)
+                goal_area = cv2.contourArea(approx)
+        elif self.visualization == 2:
+            name = "Convex Hull"
+            hull = cv2.convexHull(goal_contour)
+            cv2.drawContours(frame, [hull], 0, self.vis_color, 2)
+            goal_area = cv2.contourArea(hull)
+        elif self.visualization == 3:
+            name = "Bounding Circle"
+            ((x, y), radius) = cv2.minEnclosingCircle(goal_contour)
+            cv2.circle(frame, (int(x), int(y)), int(radius), self.vis_color, 2)
+            goal_area = math.pi * math.pow(radius, 2)
+        elif self.visualization == 4:
+            name = "Bounding Rectangle"
+            x, y, w, h = cv2.boundingRect(goal_contour)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), self.vis_color, 2)
+            goal_area = w * h
+        elif self.visualization == 5:
+            name = "Rotated Rectangle"
+            rect = cv2.minAreaRect(goal_contour)
+            x, y = rect[0]
+            w, h = rect[1]
+            angle = rect[2]
+            box = cv2.boxPoints(rect)
+            box = np.int0(box)
+            cv2.putText(frame, "{0}deg".format(int(angle * -1)), (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         self.text_color, 2, cv2.LINE_AA)
+            cv2.drawContours(frame, [box], 0, self.vis_color, 2)
+            goal_area = w * h
 
-            # Center Text
-            cv2.putText(frame, "Center: X: {:.1f}, Y: {:.1f}".format(((goal_center[0] / dim[0]) * 100) - 50,
-                                                                     ((goal_center[1] / dim[1]) * -100) + 50), (25, 75),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.50, self.text_color, 2, cv2.LINE_AA)
+        # Center Dot
+        moment = cv2.moments(goal_contour)
+        goal_center = (int(moment["m10"] / moment["m00"]), int(moment["m01"] / moment["m00"]))
+        cv2.circle(frame, goal_center, 5, (0, 255, 0), -1)
 
-            # Visualization Name
-            cv2.putText(frame, name, (25, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, self.text_color, 2, cv2.LINE_AA)
+        # Area Text
+        area_percentage = (goal_area / (dim[0] * dim[1])) * 100
+        cv2.putText(frame, "Area: {:#.1f}%".format(area_percentage), (25, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.50,
+                    self.text_color, 2, cv2.LINE_AA)
 
-            cv2.rectangle(frame, (0, dim[1] - 25), (dim[0], dim[1]), goal_color, -1)
+        # Center Text
+        cv2.putText(frame, "Center: X: {:.1f}, Y: {:.1f}".format(((goal_center[0] / dim[0]) * 100) - 50,
+                                                                 ((goal_center[1] / dim[1]) * -100) + 50), (25, 75),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.50, self.text_color, 2, cv2.LINE_AA)
+
+        # Visualization Name
+        cv2.putText(frame, name, (25, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.50, self.text_color, 2, cv2.LINE_AA)
+
+        # Aspect Ratio Error
+        confidence = CVPipeline.get_goal_confidence(goal_contour, frame)
+        cv2.putText(frame, "Goal Confidence: {:#.1f}%".format(confidence), (25, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.50, self.text_color, 2, cv2.LINE_AA)
+
+        cv2.rectangle(frame, (0, dim[1] - 25), (dim[0], dim[1]), goal_color, -1)
         return goal_center
+
+    @staticmethod
+    def get_goal_confidence(goal_contour, frame):
+        x, y, w, h = cv2.boundingRect(goal_contour)
+        if h == 0:
+            return 0
+        rect_area = w * h
+        area = cv2.contourArea(goal_contour)
+
+        # Aspect Ratio Confidence
+        aspect_ratio_confidence = 1 - (abs(math.sqrt(2) - w / h) / math.sqrt(2)) # 0 -> 1
+
+        # Solidity Confidence
+        solidity_confidence = float(area) / rect_area # 0 -> 1
+
+        # Size Confidence
+        total_size = frame.shape[0] * frame.shape[1]
+        expected_size = total_size * 0.01
+        actual_size = area
+        size_difference = abs(expected_size - actual_size)
+        size_confidence = 1 - size_difference / max(expected_size, actual_size)
+
+        # Adjacency Confidence
+        inch = int(w / 11)
+        left = int(x - (3 * inch))
+        right = int(x + w + (3 * inch))
+        vertical_center = int(y + h/2)
+        bl, gl, rl = frame[vertical_center][min(frame.shape[1] - 1, max(1, left))]
+        br, gr, rr = frame[vertical_center][min(frame.shape[1] - 1, max(1, right))]
+        cv2.circle(frame, (left, vertical_center), 5, (0,255,0), -1)
+        cv2.circle(frame, (right, vertical_center), 5, (0,255,0), -1)
+
+        adjacency_confidence = 0.0
+        if math.isclose(rl, rr, rel_tol=10) and rl > 210 and bl < 100 and gl < 50:
+            adjacency_confidence = 1.0
+
+        total = aspect_ratio_confidence + solidity_confidence + size_confidence + adjacency_confidence
+        # if (total > 3):
+        #      print(bl, gl, rl, aspect_ratio_confidence, solidity_confidence, size_confidence, adjacency_confidence, total)
+
+        confidence = (total / 4) * 100
+        return confidence
 
     @staticmethod
     def is_entirely_in_frame(frame, cnt):
@@ -350,7 +393,6 @@ class CVPipeline:
         vm = int(frame.shape[0] * margin)
         hm = int(frame.shape[1] * margin)
         return leftmost[0] > hm and rightmost[0] < frame.shape[1] - hm and topmost[1] > vm and bottommost[1] < frame.shape[0] - vm
-
 
     @staticmethod
     def get_mean_color(frame, contour):
